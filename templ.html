@@ -3,7 +3,9 @@
 <h2>{{with .Test}}{{.}}{{end}}</h2>
 <h3>{{"lol"}}</h3>
 {{/*omg comment*/}}
-<ul>{{range $i, $val := .Arr}}
+<ul>
+{{range $i, $val := .Arr}}
     <li id="{{$i}}">{{$val}}</li>
-{{end}}</ul>
+{{end}}
+</ul>
 {{end}}

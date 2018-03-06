@@ -7,46 +7,122 @@ import (
 	"regexp"
 	"strings"
 	"html/template"
+	flag "github.com/ogier/pflag"
+	"path/filepath"
+	"path"
+	"github.com/tdewolff/minify"
+	"github.com/tdewolff/minify/html"
+	"github.com/tdewolff/minify/js"
+	"github.com/tdewolff/minify/css"
+	"github.com/ales6164/pages"
 )
 
-type Site struct {
-	content string
+type Compiler struct {
+	filePaths []string
+	content   string
 
 	i      int
 	opened []Func
 }
 
+var settingsPath string
+var serve bool
+
+func init() {
+	flag.StringVarP(&settingsPath, "settings", "s", "./settings.json", "Import settings.json")
+	flag.BoolVar(&serve, "serve", false, "")
+}
+
 func main() {
-	// parse template for real to check for any errors
-	text, err := ioutil.ReadFile("templ.html")
+	flag.Parse()
+
+	runningDir, err := filepath.Abs("./")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	t := template.New("")
-	t, err = t.Parse(string(text))
+	p, err := pages.New(&pages.Options{
+		Base:         runningDir,
+		JsonFilePath: path.Join(runningDir, path.Dir(settingsPath)),
+	})
+
+
+	// serving or just compiling?
+	if f := flag.Lookup("serve"); f != nil && f.Value.String() == "true" {
+		//s.serveSite()
+	} else {
+		var c = &Compiler{}
+		c.init(p)
+	}
+}
+
+func (c *Compiler) init(page *pages.Pages) {
+	// create compiled path dir
+	if _, err := os.Stat(path.Dir(page.Dist)); os.IsNotExist(err) {
+		err = os.MkdirAll(path.Dir(page.Dist), os.ModePerm)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	// create output js file
+	output, err := os.Create(page.Dist)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	defer output.Close()
 
-	var s = &Site{}
-	// remove comments
-	// fails if astrix (*) is a part of comment content
-	html := regexp.MustCompile(`{{[^{]*(\/\*[^\*]*\*\/)[^}]*}}`).ReplaceAllString(string(text), "")
+	// set minifier
+	m := minify.New()
+	m.AddFunc("text/css", css.Minify)
+	m.AddFunc("text/html", html.Minify)
+	m.AddFunc("text/javascript", js.Minify)
+	m.Add("text/html", &html.Minifier{
+		KeepDefaultAttrVals:     true,
+		KeepWhitespace:          false,
+		KeepConditionalComments: true,
+		KeepDocumentTags:        true,
+		KeepEndTags:             true,
+	})
 
-	fmt.Print(s.Compile(html))
+	// compile templates
+	for _, f := range c.filePaths {
+		tmpl, err := ioutil.ReadFile(f)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		// remove comments
+		// todo: fails if astrix (*) is a part of comment content
+		compiledJS := regexp.MustCompile(`{{[^{]*(\/\*[^\*]*\*\/)[^}]*}}`).ReplaceAllString(string(tmpl), "")
+
+		// minify html
+		compiledJS, err = m.String("text/html", compiledJS)
+
+		compiledJS = c.Compile(compiledJS)
+
+		_, err = output.WriteString(compiledJS)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Println("done")
 }
 
 // compile file
-func (s *Site) Compile(text string) string {
-	s.content = text
-	s.content = regexp.MustCompile(`({{)[^}]+(}})`).ReplaceAllStringFunc(s.content, s.replace)
-	return s.content
+func (c *Compiler) Compile(text string) string {
+	c.content = text
+	c.content = regexp.MustCompile(`({{)[^}]+(}})`).ReplaceAllStringFunc(c.content, c.replace)
+	return c.content
 }
 
-func (s *Site) replace(pipeline string) string {
+func (c *Compiler) replace(pipeline string) string {
 	pipeline = strings.TrimLeft(pipeline, "{{")
 	pipeline = strings.TrimRight(pipeline, "}}")
 	pipeline = strings.TrimSpace(pipeline)
@@ -57,17 +133,17 @@ func (s *Site) replace(pipeline string) string {
 	// remove double spaces, newlines
 	pipeline = regexp.MustCompile(`(\s|\v|\n)+`).ReplaceAllString(pipeline, " ")
 
-	return s.renderPipeline(pipeline)
+	return c.renderPipeline(pipeline)
 }
 
 // currently doesn't support real pipelines
 // with if eq "sth" "othr"
-func (s *Site) renderPipeline(pipeline string) string {
+func (c *Compiler) renderPipeline(pipeline string) string {
 	commands := strings.Split(pipeline, " ")
-	return s.renderCommand(commands)
+	return c.renderCommand(commands)
 }
 
-func (s *Site) renderCommand(commands []string) string {
+func (c *Compiler) renderCommand(commands []string) string {
 	var render string
 
 	cmd := commands[0]
@@ -75,17 +151,17 @@ func (s *Site) renderCommand(commands []string) string {
 
 	switch cmd {
 	case "define":
-		s.putFunc(FuncDefine(evalInner(commands[1:])))
-		render = s.opened[s.i].start()
+		c.putFunc(FuncDefine(evalInner(commands[1:])))
+		render = c.opened[c.i].start()
 	case "with":
-		s.putFunc(FuncWith(evalInner(commands[1:])))
-		render = s.opened[s.i].start()
+		c.putFunc(FuncWith(evalInner(commands[1:])))
+		render = c.opened[c.i].start()
 	case "range":
-		s.putFunc(FuncRange(evalInner(commands[1:])))
-		render = s.opened[s.i].start()
+		c.putFunc(FuncRange(evalInner(commands[1:])))
+		render = c.opened[c.i].start()
 	case "end":
-		render = s.endFunc()
-		fmt.Println("ending with", render, len(s.opened))
+		render = c.endFunc()
+		/*fmt.Println("ending with", render, len(s.opened))*/
 	default:
 		if strings.HasPrefix(cmd, ".") {
 			if len(cmd) == 1 {
@@ -103,15 +179,15 @@ func (s *Site) renderCommand(commands []string) string {
 	return render
 }
 
-func (s *Site) putFunc(f Func) {
-	s.opened = append(s.opened, f)
-	s.i = len(s.opened) - 1
+func (c *Compiler) putFunc(f Func) {
+	c.opened = append(c.opened, f)
+	c.i = len(c.opened) - 1
 }
 
-func (s *Site) endFunc() string {
-	end := s.opened[s.i].end()
-	s.opened = s.opened[:len(s.opened)-1]
-	s.i = len(s.opened) - 1
+func (c *Compiler) endFunc() string {
+	end := c.opened[c.i].end()
+	c.opened = c.opened[:len(c.opened)-1]
+	c.i = len(c.opened) - 1
 	return end
 }
 
@@ -255,4 +331,31 @@ func (f *funcRange) end() string {
 		return "`}"
 	}
 	return "`).join(''):``}"
+}
+
+type Context struct {
+	PageTemplate string
+	Data         map[string]interface{}
+}
+
+type Settings struct {
+	basePath  string
+	path      string
+	templates *template.Template
+
+	Templates    []string  `json:"templates"`
+	CompiledPath string    `json:"compiled_path"`
+	Routers      []*Router `json:"routers"`
+	Layout       string    `json:"layout"`
+}
+
+type Router struct {
+	Name   string `json:"name"`
+	Layout string `json:"layout"`
+	Handle map[string]*Route
+}
+
+type Route struct {
+	Layout string `json:"layout"`
+	Page   string `json:"page"`
 }
