@@ -9,12 +9,13 @@ import (
 	"html/template"
 	flag "github.com/ogier/pflag"
 	"path/filepath"
-	"path"
 	"github.com/tdewolff/minify"
 	"github.com/tdewolff/minify/html"
 	"github.com/tdewolff/minify/js"
 	"github.com/tdewolff/minify/css"
 	"github.com/ales6164/pages"
+	"path"
+	"bytes"
 )
 
 type Compiler struct {
@@ -25,11 +26,14 @@ type Compiler struct {
 	opened []Func
 }
 
-var settingsPath string
+var settingsPath, flagLayout, flagPage, flagPath string
 var serve bool
 
 func init() {
 	flag.StringVarP(&settingsPath, "settings", "s", "./settings.json", "Import settings.json")
+	flag.StringVar(&flagLayout, "layout", "", "")
+	flag.StringVar(&flagPage, "page", "", "")
+	flag.StringVar(&flagPath, "path", "", "")
 	flag.BoolVar(&serve, "serve", false, "")
 }
 
@@ -44,13 +48,22 @@ func main() {
 
 	p, err := pages.New(&pages.Options{
 		Base:         runningDir,
-		JsonFilePath: path.Join(runningDir, path.Dir(settingsPath)),
+		JsonFilePath: settingsPath,
 	})
-
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
 	// serving or just compiling?
 	if f := flag.Lookup("serve"); f != nil && f.Value.String() == "true" {
-		//s.serveSite()
+		buf := new(bytes.Buffer)
+		err := p.Execute(buf, flagLayout, flagPage)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Println(buf.String())
 	} else {
 		var c = &Compiler{}
 		c.init(p)
@@ -111,8 +124,6 @@ func (c *Compiler) init(page *pages.Pages) {
 			os.Exit(1)
 		}
 	}
-
-	fmt.Println("done")
 }
 
 // compile file
