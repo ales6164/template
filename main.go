@@ -16,14 +16,15 @@ import (
 	"github.com/ales6164/pages"
 	"path"
 	"bytes"
+	"strconv"
 )
 
 type Compiler struct {
-	filePaths []string
-	content   string
+	content string
 
-	i      int
-	opened []Func
+	i                   int
+	opened              []Func
+	predefinedFuncCalls []string
 }
 
 var settingsPath, flagLayout, flagPage, flagPath string
@@ -47,6 +48,7 @@ func main() {
 	}
 
 	p, err := pages.New(&pages.Options{
+		IsRendering:  true,
 		Base:         runningDir,
 		JsonFilePath: settingsPath,
 	})
@@ -102,7 +104,7 @@ func (c *Compiler) init(page *pages.Pages) {
 	})
 
 	// compile templates
-	for _, f := range c.filePaths {
+	for _, f := range page.TemplateFilePaths {
 		tmpl, err := ioutil.ReadFile(f)
 		if err != nil {
 			fmt.Println(err)
@@ -129,7 +131,9 @@ func (c *Compiler) init(page *pages.Pages) {
 // compile file
 func (c *Compiler) Compile(text string) string {
 	c.content = text
+	c.content = regexp.MustCompile("\x60").ReplaceAllString(c.content, "\\\x60")
 	c.content = regexp.MustCompile(`({{)[^}]+(}})`).ReplaceAllStringFunc(c.content, c.replace)
+
 	return c.content
 }
 
@@ -162,13 +166,16 @@ func (c *Compiler) renderCommand(commands []string) string {
 
 	switch cmd {
 	case "define":
-		c.putFunc(FuncDefine(evalInner(commands[1:])))
+		c.putFunc(FuncDefine(c, c.evalInner(commands[1:])))
 		render = c.opened[c.i].start()
 	case "with":
-		c.putFunc(FuncWith(evalInner(commands[1:])))
+		c.putFunc(FuncWith(c.evalInner(commands[1:])))
 		render = c.opened[c.i].start()
+	case "template":
+		fun := FuncTemplate(c.evalInner(commands[1:]))
+		render = fun.start()
 	case "range":
-		c.putFunc(FuncRange(evalInner(commands[1:])))
+		c.putFunc(FuncRange(c.evalInner(commands[1:])))
 		render = c.opened[c.i].start()
 	case "end":
 		render = c.endFunc()
@@ -202,7 +209,7 @@ func (c *Compiler) endFunc() string {
 	return end
 }
 
-func evalInner(inner []string) string {
+func (c *Compiler) evalInner(inner []string) string {
 	var out []string
 	for i := len(inner) - 1; i >= 0; i-- {
 		tmp := ""
@@ -210,6 +217,9 @@ func evalInner(inner []string) string {
 		switch cmd {
 		/*case "eq":
 			// call to some tmp=func(out)string*/
+		case "fetch":
+			c.predefinedFuncCalls = append(c.predefinedFuncCalls, `['fetch', `+strings.Join(out, ",")+`]`)
+			out = []string{"$$$[" + strconv.Itoa(len(c.predefinedFuncCalls)-1) + "]"}
 		default:
 			if strings.HasPrefix(cmd, ".") {
 				if len(cmd) == 1 {
@@ -237,19 +247,21 @@ type Func interface {
 }
 
 type funcDefine struct {
+	c    *Compiler
 	name string
 }
 
 /* DEFINE */
 
-func FuncDefine(name string) *funcDefine {
+func FuncDefine(c *Compiler, name string) *funcDefine {
 	return &funcDefine{
+		c:    c,
 		name: name,
 	}
 }
 
 func (f *funcDefine) start() string {
-	return "define(" + f.name + ",($)=>{let $$=$;return`"
+	return "customComponents.define(" + f.name + ",($,$$$)=>{let $$=$;return`"
 }
 
 func (f *funcDefine) orElse() string {
@@ -257,7 +269,12 @@ func (f *funcDefine) orElse() string {
 }
 
 func (f *funcDefine) end() string {
-	return "`});"
+	var predefFuns string
+	if len(f.c.predefinedFuncCalls) > 0 {
+		predefFuns = ",[" + strings.Join(f.c.predefinedFuncCalls, ",") + "]"
+
+	}
+	return "`}" + predefFuns + ");"
 }
 
 /* WITH */
@@ -287,6 +304,43 @@ func (f *funcWith) end() string {
 		return "`}"
 	}
 	return "`})(" + f.obj + "):``}"
+}
+
+/* TEMPLATE */
+
+type funcTemplate struct {
+	context string
+	name    string
+}
+
+func FuncTemplate(nameContext string) *funcTemplate {
+	var name, context string
+	nc := strings.Split(nameContext, " ")
+	name = nc[0]
+	if len(nc) > 1 {
+		context = nc[1]
+	}
+
+	return &funcTemplate{
+		name:    name,
+		context: context,
+	}
+}
+
+func (f *funcTemplate) start() string {
+	var ctx string
+	if len(f.context) > 0 {
+		ctx = "," + f.context
+	}
+	return "${customComponents.render(" + f.name + ctx + ")}"
+}
+
+func (f *funcTemplate) orElse() string {
+	return ""
+}
+
+func (f *funcTemplate) end() string {
+	return ""
 }
 
 /* RANGE */
