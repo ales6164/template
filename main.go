@@ -8,7 +8,6 @@ import (
 	"strings"
 	"html/template"
 	flag "github.com/ogier/pflag"
-	"path/filepath"
 	"github.com/tdewolff/minify"
 	"github.com/tdewolff/minify/html"
 	"github.com/tdewolff/minify/js"
@@ -16,11 +15,11 @@ import (
 	"github.com/ales6164/pages"
 	"path"
 	"bytes"
-	"strconv"
 )
 
 type Compiler struct {
 	content string
+	pages   *pages.Pages
 
 	i                   int
 	opened              []Func
@@ -41,15 +40,8 @@ func init() {
 func main() {
 	flag.Parse()
 
-	runningDir, err := filepath.Abs("./")
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
 	p, err := pages.New(&pages.Options{
 		IsRendering:  true,
-		Base:         runningDir,
 		JsonFilePath: settingsPath,
 	})
 	if err != nil {
@@ -217,9 +209,9 @@ func (c *Compiler) evalInner(inner []string) string {
 		switch cmd {
 		/*case "eq":
 			// call to some tmp=func(out)string*/
-		case "fetch":
-			c.predefinedFuncCalls = append(c.predefinedFuncCalls, `['fetch', `+strings.Join(out, ",")+`]`)
-			out = []string{"$$$[" + strconv.Itoa(len(c.predefinedFuncCalls)-1) + "]"}
+		/*case "fetch":
+			c.predefinedFuncCalls = append(c.predefinedFuncCalls, `['fetch', '`+c.pages.API+strings.Join(out, "/")+`']`)
+			out = []string{"$$$[" + strconv.Itoa(len(c.predefinedFuncCalls)-1) + "]"}*/
 		default:
 			if strings.HasPrefix(cmd, ".") {
 				if len(cmd) == 1 {
